@@ -1,0 +1,57 @@
+To set up Cal.com locally for development, you first need to install Node.js (version >=18.x) and Yarn. Use nvm (Node Version Manager) to install and switch to the correct Node version by running:
+
+nvm install
+nvm use
+
+Next, duplicate the .env.example file to .env. Generate secure values for the required secrets using:
+
+openssl rand -base64 32
+
+Add one key under NEXTAUTH_SECRET and another under CALENDSO_ENCRYPTION_KEY in your .env file.
+
+---
+
+Database Setup
+
+For the database setup, define the DATABASE_URL in your .env file. You can use:
+
+- a local Postgres instance
+- or hosted solutions like Railway (https://railway.app) or Render (https://render.com)
+
+Once configured, run the Prisma migration with:
+
+yarn workspace @calcom/prisma db-migrate
+
+In production environments, run:
+
+yarn workspace @calcom/prisma db-deploy
+
+---
+
+Docker and Mailhog
+
+Cal.com uses Docker to run supporting services like Postgres and Mailhog for email testing. To run Mailhog, use:
+
+docker run -d -p 8025:8025 -p 1025:1025 mailhog/mailhog
+
+Make sure Docker and Docker Compose are installed beforehand.
+
+---
+
+Quick Start with `yarn dx`
+
+You can use the development helper script:
+
+yarn dx
+
+This command:
+
+- Starts a local Postgres instance via Docker
+- Seeds it with test users
+- Logs credentials to the terminal
+
+It sets up a complete local development environment that mirrors production and supports fast iteration and testing.
+
+---
+
+With this configuration, you’ll be ready to run and develop on Cal.com with full integration support.

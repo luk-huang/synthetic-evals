@@ -1,0 +1,10 @@
+sandboxes/
+worktrees/
+cal.com/
+evaluation_suite/config/.env
+*.log
+.env
+
+
+__pycache__/
+*.py[cod]
