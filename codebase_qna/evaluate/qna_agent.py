@@ -6,7 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from typing import List
-from utils.tools import read_file_tool, save_file_tool, list_files_tool
+from utils.agent_tools import read_file_tool, list_files_tool
 from utils.codebase_utils import get_file_hierarchy
 from langchain_core.exceptions import OutputParserException
 import json
@@ -37,7 +37,8 @@ You should be thorough and clear, and avoid stopping short. Even if unsure about
 
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", ANSWER_SYSTEM_PROMPT + "\n{format_instructions}"),
+    ("system", ANSWER_SYSTEM_PROMPT),
+    ("assistant", "\n{format_instructions}"),
     ("placeholder", "{chat_history}"),
     ("user", "Relevant Codebase Files: {codebase_hierarchy}"),
     ("user", "Question: {query}"),

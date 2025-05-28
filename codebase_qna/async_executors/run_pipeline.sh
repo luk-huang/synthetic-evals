@@ -29,3 +29,7 @@ PYTHONPATH='/Users/lukehuang/Documents/projects/agentic-coding-evals/' python pa
         --question_path logs/out/sampled_questions.jsonl \
         --answer_path   logs/out/sampled_agent_answers_completed.jsonl  \
         --output_path   logs/graded_agent_answers.jsonl
+
+PYTHONPATH=$(pwd) python codebase_qna/aync_executors/async_dataset_pipeline.py \
+    --repo_path     cal.com/ \
+    --merged_prs_path logs/calcom_cal.com_10pages_2025-05-27/merged_prs.jsonl 

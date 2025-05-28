@@ -40,10 +40,11 @@ Your task is to:
 
 grade_rubric_prompt = ChatPromptTemplate.from_messages([
     ("system", GRADE_SYSTEM_PROMPT + "\n{format_instructions}"),
+    ("placeholder", "{agent_scratchpad}"),
     ("user", "Rubric to apply: {rubric}"),
     ("user", "Question: {question}"),
     ("user", "Answer: {answer}"),
-    ("placeholder", "{agent_scratchpad}")
+    ("assistant", "{{")
 ]).partial(
     format_instructions=grade_rubric_parser.get_format_instructions()
 )
@@ -112,7 +113,7 @@ if __name__ == "__main__":
                 response = grade_rubric_parser.parse(response['output'][0]["text"])
 
             except OutputParserException as e:
-                from utils.clean_json import repair_json_output
+                from utils.json_repair import repair_json_output
                 response = repair_json_output(response['output'][0]["text"], GradedRubric)
 
 

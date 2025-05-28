@@ -10,36 +10,14 @@ from langchain_core.exceptions import OutputParserException
 from dotenv import load_dotenv
 import os
 from langchain.agents import create_tool_calling_agent
-from utils.tools import create_list_files_tool, create_read_file_tool, create_read_diff_from_link_tool
+from utils.agent_tools import create_list_files_tool, create_read_file_tool, create_read_diff_from_link_tool
 from utils.codebase_utils import WorktreeManager
-
-
-QUESTION_SYSTEM_PROMPT = """
-    You are a senior software engineer that has a deep understanding of the codebase. 
-    You are given a merged pull request from a GitHub repository, and think of a question a junior engineer would ask about in terms of how to implement the changes in the pull request.
-    The question should be one or two sentences long. FOLLOW THE FORMAT INSTRUCTIONS 
-"""
-
-ANSWER_SYSTEM_PROMPT = """
-You are a senior software engineer mentoring a junior engineer who has posed a question about implementing a specific feature or addressing a particular issue within the codebase.
-
-Your role is to guide them through the problem-solving process by:
-
-- Encouraging them to articulate the problem clearly and identify the desired outcome.
-- Helping them break down the problem into manageable components.
-- Prompting them to consider relevant parts of the codebase, design patterns, or architectural principles that may apply.
-- Asking probing questions that lead them to uncover insights and develop their own solutions.
-- Offering high-level guidance and best practices without providing direct code implementations.
-
-Your objective is to foster the junior engineer's critical thinking and autonomy, enabling them to arrive at a well-reasoned solution through exploration and understanding.
-"""
-
+from codebase_qna.prompt_templates.prompts import QUESTION_SYSTEM_PROMPT, ANSWER_SYSTEM_PROMPT
 
 class Question(BaseModel):
     question: str = Field(..., description="The question that was asked.")
 
 class Answer(BaseModel):
-    text: str = Field(..., description="Ideally Nothing in here, but if you need to say something, say it here.")
     answer: str = Field(..., description="The answer to the question.")
     sources: List[str] = Field(..., description="The sources that were used to answer the question.")
 
@@ -48,24 +26,25 @@ answer_parser = PydanticOutputParser(pydantic_object=Answer)
 
 question_prompt = ChatPromptTemplate.from_messages([
     ("system", QUESTION_SYSTEM_PROMPT),
+    ("assistant", "{format_instructions}"),
+    ("placeholder", "{agent_scratchpad}"),
     ("placeholder", "{chat_history}"),
     ("user", "Merged Pull Request: {merged_pull_request}"),
     ("user", "Codebase Files: {codebase_files}"),
-    ("user", "Format Instructions: {format_instructions}"),
-    ("placeholder", "{agent_scratchpad}")
-
+    ("assistant", "{{"),
 ]).partial(
     format_instructions=question_parser.get_format_instructions()
 )
 
 answer_prompt = ChatPromptTemplate.from_messages([
     ("system", ANSWER_SYSTEM_PROMPT),
+    ("assistant", "{format_instructions}"),
+    ("placeholder", "{agent_scratchpad}"),
     ("placeholder", "{chat_history}"),
     ("user", "Question: {question}"),
     ("user", "Merged Pull Request: {merged_pull_request}"),
     ("user", "Codebase Files: {codebase_files}"),
-    ("user", "Format Instructions: {format_instructions}"),
-    ("placeholder", "{agent_scratchpad}")
+    ("assistant", "{{")
 ]).partial( 
     format_instructions=answer_parser.get_format_instructions()
 )
@@ -105,12 +84,13 @@ def main(repo_path: str, merged_prs_path: str):
     )
 
     worktree_manager = WorktreeManager(repo_path)
+    from utils.json_repair import JSONRepairAgent
+    json_repair_agent = JSONRepairAgent(model_name='gpt-4o-mini')
 
-    questions = []
-    answers_and_sources = []
+    questions_answers = []
 
     num_examples = 0
-    max_examples = 50
+    max_examples = 1
     
     with open(merged_prs_path, "r") as f:
         for line in f:
@@ -120,8 +100,6 @@ def main(repo_path: str, merged_prs_path: str):
             codebase_files = worktree_manager.get_worktree_file_hierarchy(commit_hash)
 
             print(f"Worktree Path: {worktree_path}")
-            print(f"Codebase Files: {codebase_files}")
-
             print(f"Length of Codebase Files: {len(codebase_files)}")
 
             list_files_tool = create_list_files_tool(str(worktree_path))
@@ -132,37 +110,38 @@ def main(repo_path: str, merged_prs_path: str):
             try:
                 # Create Questions
                 question_agent = create_question_agent(llm, tools)
-                raw_response = question_agent.invoke({"merged_pull_request": merged_pull_request, "codebase_files": codebase_files})['output'][0]["text"]
-                
+                raw_response = question_agent.invoke({"merged_pull_request": merged_pull_request, "codebase_files": codebase_files})
+                raw_text = raw_response['output'][0]["text"]
                 try:
-                    parsed_response = question_parser.parse(raw_response)
+                    parsed_response = question_parser.parse("{" + raw_text)
                 except OutputParserException as e:
-                    from utils.clean_json import JSONRepairAgent
-                    json_repair_agent = JSONRepairAgent(Question)
-                    parsed_response = json_repair_agent.repair_json_output(raw_response)
+                    print(f"Error parsing answer: {raw_text}")
+                    parsed_response = json_repair_agent.repair_json_output(raw_text, Question)
 
-                print(f"Generated Question: {parsed_response.question}")
-                questions.append({"question": parsed_response.question})
+                generated_question = parsed_response.question
+                print(f"Generated Question: {generated_question}")
 
                 # Create Answers
                 answer_agent = create_answer_agent(llm, tools)
-                raw_response = answer_agent.invoke({"question": parsed_response.question, "merged_pull_request": merged_pull_request, "codebase_files": codebase_files})
+                raw_response = answer_agent.invoke({"question": generated_question, "merged_pull_request": merged_pull_request, "codebase_files": codebase_files})
                 raw_text = raw_response['output'][0]["text"]
 
                 try:
-                    parsed_response = answer_parser.parse(raw_text)
+                    parsed_response = answer_parser.parse("{" + raw_text)
                 except OutputParserException as e:
-                    from utils.clean_json import JSONRepairAgent
-                    json_repair_agent = JSONRepairAgent(Answer)
-                    parsed_response = json_repair_agent.repair_json_output(raw_text)
+                    print(f"Error parsing answer: {raw_text}")
+                    parsed_response = json_repair_agent.repair_json_output(raw_text, Answer)
 
                 print(f"Generated Answer: {parsed_response.answer}")
-                
-                answers_and_sources.append({
+                questions_answers.append({
+                    "pr_number": merged_pull_request["number"],
+                    "pr_url": merged_pull_request["url"],
+                    "diff_url": merged_pull_request["diff_url"],
+                    "commit_hash": commit_hash,
+                    "question": generated_question,
                     "answer": parsed_response.answer,
                     "sources": parsed_response.sources
                 })
-
             finally:
                 worktree_manager.down(commit_hash)
 
@@ -170,15 +149,10 @@ def main(repo_path: str, merged_prs_path: str):
             if num_examples >= max_examples:
                 break
 
-    output_filename = f"logs/{merged_prs_path.split('/')[-2]}/sampled_questions_from_prs.jsonl"
+    output_filename = f"logs/{merged_prs_path.split('/')[-2]}/qna_from_prs.jsonl"
     with open(output_filename, "w") as f:
-        for question in questions:
-            f.write(json.dumps(question) + "\n")
-
-    output_filename = f"logs/{merged_prs_path.split('/')[-2]}/sampled_answers_from_prs.jsonl"
-    with open(output_filename, "w") as f:
-        for answer_and_source in answers_and_sources:
-            f.write(json.dumps(answer_and_source) + "\n")
+        for question_answer in questions_answers:
+            f.write(json.dumps(question_answer) + "\n")
 
 if __name__ == "__main__":
     import argparse

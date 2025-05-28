@@ -84,39 +84,63 @@ class WorktreeManager:
         self.repo_path = repo_path
         self.worktrees = {}
         self.origin_repo_path = repo_path
-        self.base = Path(self.repo_path).resolve().parent / "worktrees"
+
+        self.base = Path(self.repo_path).resolve().parent / "worktrees" / repo_path.split("/")[-1]
+
+        if not self.base.exists():
+            print(f"Creating worktree directories for {repo_path} at {self.base}")
+            self.base.mkdir(parents=True, exist_ok=True)
+        else:
+            print(f"Removing existing worktrees for {repo_path} found at {self.base}")
+            shutil.rmtree(self.base)
+            self.base.mkdir(parents=True, exist_ok=True)
 
     def create(self, commit: str) -> Path:
-        worktree_id = commit
-        worktree_path = self.base / f"worktree_{worktree_id}"
-        self.worktrees[worktree_id] = worktree_path
-
+        worktree_path = self.base / f"worktree_{commit}"
+        self.worktrees[commit] = worktree_path
         repo = Repo(self.origin_repo_path)
 
-        # Clean up stale worktrees (prune broken entries)
+        # 1) prune any broken entries
         try:
             repo.git.worktree("prune")
         except GitCommandError as e:
             print(f"⚠️ Failed to prune worktrees: {e}")
 
-        # Fetch commit if needed
+        # 2) ensure commit is local
         try:
             repo.git.rev_parse("--verify", f"{commit}^{{commit}}")
         except GitCommandError:
             repo.git.fetch("origin", commit)
 
-        # Add worktree (force if it is registered but missing)
+        # 3) if folder already exists, validate HEAD
+        if worktree_path.exists():
+            try:
+                wt_repo = Repo(str(worktree_path))
+                current = wt_repo.head.commit.hexsha
+                if current.lower() == commit.lower():
+                    # ✅ already correct, bail out
+                    return worktree_path
+                else:
+                    # ❌ wrong commit, blow it away
+                    print(f"⚠️ Worktree at {worktree_path} is at {current}, expected {commit}. Re-creating…")
+                    shutil.rmtree(worktree_path)
+            except Exception as e:
+                # e.g. not a git repo or HEAD missing
+                print(f"⚠️ Could not validate existing worktree ({e}), forcing overwrite…")
+                shutil.rmtree(worktree_path)
+
+        # 4) add the worktree (with force fallback)
         try:
             repo.git.worktree("add", "--detach", str(worktree_path), commit)
         except GitCommandError as e:
-            if "already registered worktree" in str(e):
-                print(f"⚠️ Detected registered but missing worktree. Forcing re-add...")
+            msg = str(e)
+            if "already registered worktree" in msg or "exists" in msg:
+                print(f"⚠️ Detected registered-but-missing worktree; forcing re-add…")
                 repo.git.worktree("add", "-f", "--detach", str(worktree_path), commit)
             else:
                 raise RuntimeError(f"❌ Failed to create worktree for {commit}: {e}")
 
         return worktree_path
-
     
     def get_worktree_file_hierarchy(self, worktree_id: str) -> str:
         if worktree_id not in self.worktrees:

@@ -3,7 +3,6 @@ import json
 from typing import List
 import random
 import time
-import os
 import json
 from typing import Type
 from dotenv import load_dotenv
@@ -76,20 +75,18 @@ def retry_with_exponential_backoff(
 
 
 class JSONRepairAgent():
-    def __init__(self, schema_model: Type[BaseModel], model_name: str = "gpt-4.1-mini"):
+    def __init__(self, model_name: str = "gpt-4.1-mini"):
         load_dotenv()
         self.llm = ChatOpenAI(model_name=model_name, temperature=0.0)
-        self.parser = PydanticOutputParser(pydantic_object=schema_model)
-        self.fixing_parser = OutputFixingParser.from_llm(parser=self.parser, llm=self.llm)
 
-    def repair_json_output(self, raw_output: str) -> BaseModel:
+    def repair_json_output(self, raw_output: str, schema_model: Type[BaseModel]) -> BaseModel:
         """
         Attempts to parse and repair a JSON output to match the provided Pydantic schema.
         """
         # ✅ Use retry with LangChain LLM call
         @retry_with_exponential_backoff()
         def parse_with_backoff(output: str):
-            return self.fixing_parser.parse(output)
+            return PydanticOutputParser(pydantic_object=schema_model).parse(output)
         
         return parse_with_backoff(raw_output)
 
