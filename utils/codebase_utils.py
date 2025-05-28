@@ -3,6 +3,7 @@ from pathlib import Path
 from git import Repo, GitCommandError
 import shutil
 from typing import Tuple, List
+import uuid
 
 DEFAULT_IGNORED_DIRS = {'.git', '.next', 'node_modules', '__pycache__', 'venv', '.venv', '.DS_Store', '.idea'}
 
@@ -80,20 +81,30 @@ def make_code_text(files_dict, add_line_numbers=True):
     return all_text.strip("\n")
 
 class WorktreeManager:
-    def __init__(self, repo_path: str):
+    def __init__(self, repo_path: str, task: str = None):
+        if task:
+            self.task_id = task
+        else:
+            self.task_id = str(uuid.uuid4())
+
         self.repo_path = repo_path
         self.worktrees = {}
         self.origin_repo_path = repo_path
 
-        self.base = Path(self.repo_path).resolve().parent / "worktrees" / repo_path.split("/")[-1]
+        self.base = Path(self.repo_path).resolve().parent / f"worktrees_{self.task_id}"
 
         if not self.base.exists():
             print(f"Creating worktree directories for {repo_path} at {self.base}")
             self.base.mkdir(parents=True, exist_ok=True)
         else:
+            # Ask User for Permission
             print(f"Removing existing worktrees for {repo_path} found at {self.base}")
-            shutil.rmtree(self.base)
-            self.base.mkdir(parents=True, exist_ok=True)
+            if input("Do you want to remove them? (y/n)") == "y":
+                shutil.rmtree(self.base)
+                self.base.mkdir(parents=True, exist_ok=True)
+            else:
+                print("Exiting...")
+                exit(1)
 
     def create(self, commit: str) -> Path:
         worktree_path = self.base / f"worktree_{commit}"

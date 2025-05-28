@@ -104,24 +104,20 @@ async def grade_worker(row: Dict[str, str], sem: asyncio.Semaphore, executor: Ag
                     await f.flush()
                 return result
 
-    text = raw["output"]
+    text = raw["output"][0]["text"]
     graded = await parse_json_output(
         text, GradedRubric, graded_rubric_parser, json_repair_agent,
-        default = {
-                    "pr_number": row["pr_number"],
-                    "commit_hash": row["commit_hash"],
-                    "question": row["question"],
-                    "graded_rubric": "Failed to grade",
-                    "score_percent": 0.0
-                }
+        default = None
     )
 
-    graded = GradedRubric(**graded)
-
     # --- compute percentage score ---
-    total   = sum(c.score for c in graded.graded_criteria)
-    maximum = 4 * len(graded.graded_criteria)
-    pct     = round((total / maximum) * 100, 2) if maximum else 0.0
+    if graded is None:
+        pct = 0.0
+        graded = GradedRubric(graded_criteria=[CriterionGrade(criterion="Failed to grade", score=0)])
+    else:
+        total   = sum(c.score for c in graded.graded_criteria)
+        maximum = 4 * len(graded.graded_criteria)
+        pct     = round((total / maximum) * 100, 2) if maximum else 0.0
 
     # pretty-print to console (optional)
     display_markdown(dataframe_from_grades(graded))
@@ -130,6 +126,7 @@ async def grade_worker(row: Dict[str, str], sem: asyncio.Semaphore, executor: Ag
         "pr_number":     row["pr_number"],
         "commit_hash":   row["commit_hash"],
         "question":      row["question"],
+        "rubric":        row["rubric"],
         "graded_rubric": graded.model_dump(),
         "score_percent": pct,
     }
@@ -149,18 +146,26 @@ async def run_parallel(
         out_path: Path, 
         executor: AgentExecutor, 
         graded_rubric_parser: PydanticOutputParser, 
-        resume: bool = False
+        resume: bool = False,
+        num_to_grade: int | None = None
     ):
 
     sem = asyncio.Semaphore(MAX_PARALLEL)
 
-    a_dict = {obj["pr_number"]: obj["answer"]
-              for obj in map(json.loads, a_path.read_text().splitlines())}
-    r_dict = {obj["pr_number"]: obj["rubric"]
-              for obj in map(json.loads, r_path.read_text().splitlines())}
+    a_dict = {obj["pr_number"]: obj for obj in map(json.loads, a_path.read_text().splitlines())}
+    r_dict = {obj["pr_number"]: obj for obj in map(json.loads, r_path.read_text().splitlines())}
 
     shared = a_dict.keys() & r_dict.keys()
-    rows   = [{"question": k, "answer": a_dict[k], "rubric": r_dict[k]} for k in shared]
+    
+    if num_to_grade:
+        shared = list(shared)[:num_to_grade]
+    
+    if "answer" not in a_dict[list(shared)[0]]:
+        rows   = [{"pr_number": k, "commit_hash": a_dict[k]["commit_hash"], "question": a_dict[k]["question"], "answer": a_dict[k]["response"], "rubric": r_dict[k]["rubric"]} for k in shared]
+    else:
+        rows   = [{"pr_number": k, "commit_hash": a_dict[k]["commit_hash"], "question": a_dict[k]["question"], "answer": a_dict[k]["answer"], "rubric": r_dict[k]["rubric"]} for k in shared]
+    
+    print(f"Grading {len(rows)} questions")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if resume:
@@ -168,6 +173,7 @@ async def run_parallel(
             with out_path.open() as f:
                 existing_pr_numbers = [json.loads(line)["pr_number"] for line in f]
             rows = [row for row in rows if row["pr_number"] not in existing_pr_numbers]
+            print(f"Resuming from {len(existing_pr_numbers)} existing graded questions")
         else:
             print("Output file does not exist. Please run without --resume.")
             return
@@ -187,10 +193,8 @@ async def run_parallel(
     print(f"✅ Completed {sum(r is not None for r in results)} graded results → {out_path}")
 
 def main(args):
-    if args.output_path is None:
-        args.output_path = Path(args.rubric_path).parent / f"{args.answer_path.stem}_graded_rubrics.jsonl"
 
-    ERR_FILE = Path(args.output_path).with_suffix("errors.log")
+    ERR_FILE = Path(args.output_path).with_suffix(".errors.log")
 
     graded_rubric_parser = PydanticOutputParser(pydantic_object=GradedRubric)
 
@@ -208,7 +212,7 @@ def main(args):
     # --------------------------------------------------------------------- #
 
     asyncio.run(run_parallel(
-        args.answer_path, args.rubric_path, args.output_path, executor, graded_rubric_parser, args.resume
+        args.answer_path, args.rubric_path, args.output_path, executor, graded_rubric_parser, args.resume, args.num_to_grade
     ))
 
     print("✅ Graded rubrics written to", args.output_path)
@@ -221,14 +225,19 @@ if __name__ == "__main__":
     p.add_argument("--answer_path",   required=True, type=Path)
     p.add_argument("--output_path",   required=True, type=Path)
     p.add_argument("--resume",        required=False, action="store_true", default=False)
+    p.add_argument("--num_to_grade",  required=False, default=None)
     args = p.parse_args()
     main(args)
 
 '''
 PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader.py \
-    --rubric_path   data/rubrics.jsonl \
-    --question_path data/questions.jsonl \
-    --answer_path   data/answers.jsonl   \
-    --output_path   logs/graded_rubrics.jsonl
-    
+    --rubric_path   logs/calcom_cal.com_10pages_2025-05-27/rubrics.jsonl \
+    --answer_path   logs/calcom_cal.com_10pages_2025-05-27/claude_code_answers.jsonl   \
+    --output_path   logs/calcom_cal.com_10pages_2025-05-27/claude_graded_rubrics.jsonl 
+
+PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader.py \
+    --rubric_path   logs/calcom_cal.com_10pages_2025-05-27/rubrics.jsonl \
+    --answer_path   logs/calcom_cal.com_10pages_2025-05-27/dyi_agent/dyi_agent_answers.jsonl   \
+    --output_path   logs/calcom_cal.com_10pages_2025-05-27/dyi_agent/dyi_agent_graded_rubrics.jsonl 
+
 '''

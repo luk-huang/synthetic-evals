@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.exceptions import OutputParserException
+import aiofiles
 
 from utils.agent_tools          import create_read_file_tool, create_list_files_tool
 from utils.codebase_utils import WorktreeManager, get_file_hierarchy
@@ -18,18 +19,18 @@ from codebase_qna.evaluate.qna_agent import prompt, parser, QandAResponse   # ad
 # ----------------------------------------------------------
 
 MAX_PARALLEL  = 10                     # concurrent workers
-OUT_FILE      = Path("logs/generated_q_and_a_agent_answers.jsonl")
-ERR_FILE      = Path("logs/q_and_a_agent_answer_errors.log")
+OUT_FILE      = Path("logs/dyi_agent_answers.jsonl")
+ERR_FILE      = Path("logs/dyi_agent_answer_errors.log")
 OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 ERR_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-_lock = threading.Lock()
-def log_err(msg: str, exc: Exception | None = None):
-    with _lock, ERR_FILE.open("a") as fh:
-        fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+async def log_err(msg: str, exc: Exception | None = None):
+    async with aiofiles.open(ERR_FILE.name, "a") as f:
+        await f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
         if exc:
-            fh.write("".join(traceback.format_exception(exc)))
-        fh.write("-"*60 + "\n")
+            await f.write("".join(traceback.format_exception(exc)))
+        await f.write("-"*60 + "\n")
+        await f.flush()
 
 # -------- shared LLM instance (async-ready) ---------------
 load_dotenv()
@@ -44,20 +45,20 @@ llm = ChatAnthropic(
 async def answer_worker(row: Dict[str, str],
                         repo_root: str,
                         sem: asyncio.Semaphore,
-                        out_file) -> None:
+                        out_file,
+                        wt_mgr: WorktreeManager) -> None:
     """
-    row = {question, base_commit, diff_url, ...}
+    row = {question, commit_hash, diff_url, ...}
     Writes result directly to out_file when done.
     """
-    commit = row["base_commit"]
-    wt_mgr = WorktreeManager(repo_root)
+    commit = row["commit_hash"]
 
     async with sem:
         # --- create work-tree ---
         try:
             worktree_path = await asyncio.to_thread(wt_mgr.create, commit)
         except Exception as e:
-            log_err(f"worktree create failed for {commit}", e)
+            await log_err(f"worktree create failed for {commit}", e)
             return
 
         try:
@@ -88,46 +89,51 @@ async def answer_worker(row: Dict[str, str],
                         "codebase_hierarchy": codebase_hierarchy
                     })
                 except Exception as e:
-                    log_err("LLM retry failed", e)
+                    await log_err("LLM retry failed", e)
                     return
 
             text = raw["output"][0]["text"]
             try:
-                parsed = parser.parse(text)
+                parsed = parser.parse("{" + text)
             except OutputParserException:
-                parsed = json_repair_agent.repair_json_output(text, QandAResponse)
+                try:
+                    parsed = json_repair_agent.repair_json_output(text, QandAResponse)
+                except Exception as e:
+                    parsed = QandAResponse(answer=text)
 
             result = {
+                "pr_number": row["pr_number"],
+                "commit_hash": row["commit_hash"],
                 "question": row["question"],
-                "answer":   parsed.answer,
-                "sources":  parsed.sources
+                "answer":   parsed.answer
             }
             
             # Write result directly to file
-            with _lock:
-                out_file.write(json.dumps(result) + "\n")
-                out_file.flush()
-                print("✔︎ answered:", result["question"][:60])
+            async with aiofiles.open(out_file.name, "a") as f:
+                await f.write(json.dumps(result) + "\n")
+                await f.flush()
 
         except Exception as e:
-            log_err(f"worker crashed for {commit}", e)
+            print(f"worker crashed for {commit}", e)
             print(f"❌ failed to answer {row["question"][:60]}")
             result = {
+                "pr_number": row["pr_number"],
+                "commit_hash": row["commit_hash"],
                 "question": row["question"],
-                "answer":   "Failed to answer",
-                "sources":  "Failed to answer"
+                "answer":   "Failed to answer"
             }
-            with _lock:
-                out_file.write(json.dumps(result) + "\n")
-                out_file.flush()
+            async with aiofiles.open(out_file.name, "a") as f:
+                await f.write(json.dumps(result) + "\n")
+                await f.flush()
         finally:
             try:
                 await asyncio.to_thread(wt_mgr.down, commit)
             except Exception as e:
-                log_err(f"cleanup failed for {commit}", e)
+                await log_err(f"cleanup failed for {commit}", e)
 
 async def run_parallel(q_path: Path, out_path: Path, repo_root: str, resume: bool = False):
     sem = asyncio.Semaphore(MAX_PARALLEL)
+    wt_mgr = WorktreeManager(repo_root, task="dyi_agent_answers")
 
     questions = [json.loads(l) for l in q_path.open()]
 
@@ -146,7 +152,7 @@ async def run_parallel(q_path: Path, out_path: Path, repo_root: str, resume: boo
         {
             "pr_number":    q["pr_number"],
             "question":     q["question"],
-            "base_commit":  q["base_commit"]
+            "commit_hash":  q["commit_hash"]
         }
         for q in questions
     ]
@@ -154,7 +160,7 @@ async def run_parallel(q_path: Path, out_path: Path, repo_root: str, resume: boo
     # Create output file and keep it open
     with out_path.open("w") as out_file:
         tasks = [
-            asyncio.create_task(answer_worker(r, repo_root, sem, out_file))
+            asyncio.create_task(answer_worker(r, repo_root, sem, out_file, wt_mgr))
             for r in rows
         ]
         # Wait for all tasks to complete
@@ -185,6 +191,11 @@ PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_generate_answers.py 
     --question_path data/questions.jsonl \
     --output_path   logs/answers.jsonl \
     --resume        true \
+    --repo_root     cal.com/
+
+PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_generate_answers.py \
+    --question_path logs/calcom_cal.com_10pages_2025-05-27/qna.jsonl \
+    --output_path   logs/calcom_cal.com_10pages_2025-05-27/dyi_agent_answers.jsonl \
     --repo_root     cal.com/
 
 '''

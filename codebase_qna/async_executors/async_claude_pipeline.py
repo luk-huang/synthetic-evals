@@ -62,7 +62,7 @@ async def run_question(item: dict, manager: WorktreeManager,
             "pr_number": item["pr_number"],
             "commit_hash": commit_hash,
             "question": question,
-            "response": response
+            "answer": response
         }
         async with aiofiles.open(output_file, 'a') as f:
             await f.write(json.dumps(result) + "\n")

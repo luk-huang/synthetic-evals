@@ -17,7 +17,6 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
 class QandAResponse(BaseModel):
     answer: str = Field(description="The answer to the question ")
-    sources: List[str] = Field(description="The sources used to answer the question")
 
 parser = PydanticOutputParser(pydantic_object=QandAResponse)
 
@@ -39,10 +38,11 @@ You should be thorough and clear, and avoid stopping short. Even if unsure about
 prompt = ChatPromptTemplate.from_messages([
     ("system", ANSWER_SYSTEM_PROMPT),
     ("assistant", "\n{format_instructions}"),
+    ("placeholder", "{agent_scratchpad}"),
     ("placeholder", "{chat_history}"),
     ("user", "Relevant Codebase Files: {codebase_hierarchy}"),
     ("user", "Question: {query}"),
-    ("placeholder", "{agent_scratchpad}")
+    ("assistant", "{{"),
 ]).partial(format_instructions=parser.get_format_instructions())
 
 
