@@ -8,8 +8,8 @@ from pathlib import Path
 import json
 from langchain_core.exceptions import OutputParserException
 import pandas as pd
-
-    
+from codebase_qna.prompt_templates.prompts import GRADE_SYSTEM_PROMPT
+from langchain_core.messages import SystemMessage
 
 class CriterionGrade(BaseModel):
     name: str = Field(..., description="Name of the rubric criterion being graded.")
@@ -19,51 +19,25 @@ class CriterionGrade(BaseModel):
 class GradedRubric(BaseModel):
     graded_criteria: List[CriterionGrade] = Field(..., description="List of graded rubric items.")
 
-
 grade_rubric_parser = PydanticOutputParser(pydantic_object=GradedRubric)
 
-GRADE_SYSTEM_PROMPT = """
-You are a senior software engineer tasked with grading an answer using a rubric.
-
-Each rubric criterion contains:
-- A name
-- A description
-- A list of levels from 0 (worst) to 4 (best) with detailed performance descriptions
-
-Your task is to:
-- Match the answer against each rubric item
-- Assign a score (0–4)
-- Provide a short justification
-
-
-"""
-
 grade_rubric_prompt = ChatPromptTemplate.from_messages([
-    ("system", GRADE_SYSTEM_PROMPT + "\n{format_instructions}"),
+    SystemMessage(GRADE_SYSTEM_PROMPT),
+    ("assistant", "{format_instructions}"),
     ("placeholder", "{agent_scratchpad}"),
     ("user", "Rubric to apply: {rubric}"),
     ("user", "Question: {question}"),
-    ("user", "Answer: {answer}"),
-    ("assistant", "{{")
+    ("user", "Answer: {answer}")
 ]).partial(
     format_instructions=grade_rubric_parser.get_format_instructions()
 )
-
-
 
 def pretty_print_graded_rubric(raw_response: GradedRubric):
     parsed = raw_response.model_dump()
     pretty = json.dumps(parsed, indent=2)
     print(pretty)
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--rubric_path", type=str, required=True)
-    parser.add_argument("--question_path", type=str, required=True)
-    parser.add_argument("--answer_path", type=str, required=True)
-    args = parser.parse_args()
-
+def test_grade_answer(args):
     from langchain_anthropic import ChatAnthropic
     from dotenv import load_dotenv
     import os
@@ -113,12 +87,24 @@ if __name__ == "__main__":
                 response = grade_rubric_parser.parse(response['output'][0]["text"])
 
             except OutputParserException as e:
-                from utils.json_repair import repair_json_output
-                response = repair_json_output(response['output'][0]["text"], GradedRubric)
+                from utils.json_repair import ClaudeJSONRepairAgent
+                repair_agent = ClaudeJSONRepairAgent()
+                response = repair_agent.repair_json_output(response['output'][0]["text"], GradedRubric)
 
 
             print(response.graded_criteria)
 
             display_rubric_locally(response)    
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rubric_path", type=str, required=True)
+    parser.add_argument("--question_path", type=str, required=True)
+    parser.add_argument("--answer_path", type=str, required=True)
+    args = parser.parse_args()
+    
+    test_grade_answer(args)
+
+    
 
     

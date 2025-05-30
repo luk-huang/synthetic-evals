@@ -9,7 +9,7 @@ from langchain_core.exceptions import OutputParserException
 import aiofiles
 
 from utils.agent_tools          import create_read_file_tool, create_list_files_tool
-from utils.codebase_utils import WorktreeManager, get_file_hierarchy
+from utils.codebase_utils import WorktreeManager, generate_file_tree
 from utils.json_repair     import JSONRepairAgent
 
 json_repair_agent = JSONRepairAgent()
@@ -56,13 +56,13 @@ async def answer_worker(row: Dict[str, str],
     async with sem:
         # --- create work-tree ---
         try:
-            worktree_path = await asyncio.to_thread(wt_mgr.create, commit)
+            worktree_path = await wt_mgr.acquire(commit)
         except Exception as e:
             await log_err(f"worktree create failed for {commit}", e)
             return
 
         try:
-            codebase_hierarchy = await asyncio.to_thread(get_file_hierarchy,
+            codebase_hierarchy = await asyncio.to_thread(generate_file_tree,
                                                          str(worktree_path))
 
             # tools bound to THIS work-tree
@@ -127,7 +127,7 @@ async def answer_worker(row: Dict[str, str],
                 await f.flush()
         finally:
             try:
-                await asyncio.to_thread(wt_mgr.down, commit)
+                await wt_mgr.release(commit)
             except Exception as e:
                 await log_err(f"cleanup failed for {commit}", e)
 

@@ -31,7 +31,8 @@ question_prompt = ChatPromptTemplate.from_messages([
     ("placeholder", "{chat_history}"),
     ("user", "Merged Pull Request: {merged_pull_request}"),
     ("user", "Codebase Files: {codebase_files}"),
-    ("assistant", "{{"),
+    ("assistant", "{format_instructions}"),
+    # ("assistant", "Here is your rubric in the desired format: {{")
 ]).partial(
     format_instructions=question_parser.get_format_instructions()
 )
@@ -44,7 +45,8 @@ answer_prompt = ChatPromptTemplate.from_messages([
     ("user", "Question: {question}"),
     ("user", "Merged Pull Request: {merged_pull_request}"),
     ("user", "Codebase Files: {codebase_files}"),
-    ("assistant", "{{")
+    ("assistant", "{format_instructions}"),
+    # ("assistant", "Here is your rubric in the desired format: {{")
 ]).partial( 
     format_instructions=answer_parser.get_format_instructions()
 )
@@ -56,7 +58,8 @@ def create_question_agent(llm, tools: List[Tool]) -> AgentExecutor:
         agent=agent,
         tools=tools,
         verbose=True,
-        return_intermediate_steps=True
+        return_intermediate_steps=True,
+        max_iterations=None
     )
     return question_agent
 
@@ -68,7 +71,8 @@ def create_answer_agent(llm, tools: List[Tool]) -> AgentExecutor:
         agent=agent,
         tools=tools,
         verbose=True,
-        return_intermediate_steps=True
+        return_intermediate_steps=True,
+        max_iterations=None
     )
     return answer_agent
 

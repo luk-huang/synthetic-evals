@@ -5,39 +5,9 @@ from langchain_core.exceptions import OutputParserException
 from langchain.agents import create_tool_calling_agent
 from codebase_qna.construct.construct_qna import create_question_agent, create_answer_agent
 from langchain.agents import AgentExecutor
-import logging
-from contextlib import asynccontextmanager
-from pathlib import Path
-import sys
+import re
 
-@asynccontextmanager
-async def agent_log_to_file(pr_number: int, task: str):
-    log_file = Path(f"logs/agent_executor_logs/{pr_number}_{task}.log")
-    log_file.parent.mkdir(exist_ok=True)
-
-    # Logger for langchain.agents
-    handler = logging.FileHandler(log_file, mode="a")
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    agent_logger = logging.getLogger("langchain.agents")
-    agent_logger.addHandler(handler)
-
-    # Suppress print() output by redirecting sys.stdout/stderr
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    try:
-        with open(log_file, "a") as f:
-            sys.stdout = f
-            sys.stderr = f
-            yield
-    finally:
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-        agent_logger.removeHandler(handler)
-        handler.close()
-
-
-json_repair = JSONRepairAgent(model_name="gpt-4o-mini")
+json_repair = JSONRepairAgent(model_name="gpt-4.1-mini")
 
 def stage(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: wrap every stage with error capture + timing."""
@@ -63,13 +33,13 @@ async def parse_json_output(
     default: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Attempts multiple strategies to parse or repair a model-compatible JSON output."""
-    pr_number = ctx["pr"]["number"]
+    pr_number = ctx["pr"]["pr_number"]
     raw = text.strip()
 
     # Try parser with wrapped JSON
     try:
-        return parser.parse("{" + raw)
-    except OutputParserException:
+        return parser.parse(raw)
+    except OutputParserException as e:
         ctx["error_log"].append({
             "stage": f"parse_{model_label.lower()}",
             "pr_number": pr_number,
@@ -78,10 +48,31 @@ async def parse_json_output(
         })
         pass
 
+    try:
+        return parser.parse("{" + raw)
+    except OutputParserException as e:
+        pass
+
+    # regex extract json
+    try:
+        return parser.parse(re.search(r"```json\n(.*)\n```", raw).group(1))
+    except Exception:
+        pass
+
+    # regex extract json by matching { ... }
+    try:
+        # Use non-greedy match and handle nested braces
+        pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        match = re.search(pattern, raw)
+        if match:
+            return parser.parse(match.group(0))
+    except Exception:
+        pass
+
     # Try repair with raw JSON
     try:
         return repair_agent.repair_json_output(raw, model_class)
-    except Exception:
+    except Exception as e:
         ctx["error_log"].append({
             "stage": f"parse_{model_label.lower()}",
             "pr_number": pr_number,
@@ -100,6 +91,9 @@ async def parse_json_output(
             "error": f"Attempt 2: Failed to parse/repair {model_label} from output: {str(e)}",
             "raw_output": raw[:500]
         })
+
+        print(f"Failed to parse/repair {text} from output: {str(e)}")
+
         return default
 
 @stage
@@ -108,14 +102,24 @@ async def generate_qna(ctx):
     llm = ctx["llm"]
 
     # -------- QUESTION --------
+    q_tool_calls = []
     try:
         question_agent = create_question_agent(llm, tools)
-        with agent_log_to_file(ctx["pr"]["number"], "question_agent"):
-            q_raw = await question_agent.ainvoke(
-                {"merged_pull_request": ctx["pr"], "codebase_files": ctx["codebase_files"]}
-            )
+
+         
+        q_raw = await question_agent.ainvoke(
+            {"merged_pull_request": ctx["pr"]["summary"], "codebase_files": ctx["codebase_files"]}
+        )
 
         q_text = q_raw["output"][0]["text"]
+        q_tool_calls = [
+            {
+                "tool": action.tool,
+                "input": action.tool_input,
+                "output": str(observation)[:20]
+            }
+            for action, observation in q_raw.get("intermediate_steps", [])
+        ]
 
         q_parsed = await parse_json_output(
             q_text, 
@@ -124,30 +128,31 @@ async def generate_qna(ctx):
             repair_agent=json_repair, 
             model_class=ctx["QuestionModel"], 
             ctx=ctx, 
-            default={"question": "Failed to generate question"}
+            default=ctx["QuestionModel"](question="Failed to generate question")
         )
 
         ctx["question"] = q_parsed.question  # keep for rubric stag
-        
+        print(f"Question: \n {ctx['question']} \n \n")
+
     except Exception as e:
         print(f"Error generating question: {e}")
         ctx["error_log"].append(
-            {"stage": "create_question_agent", "pr_number": ctx["pr"]["number"], "error": str(e)}
+            {"stage": "create_question_agent", "pr_number": ctx["pr"]["pr_number"], "error": str(e)}
         )
         ctx["question"] = "Failed to generate question"
 
 
     # -------- ANSWER ----------
+    a_tool_calls = []
     try:
         answer_agent = create_answer_agent(llm, tools)
-        with agent_log_to_file(ctx["pr"]["number"], "answer_agent"):
-            a_raw = await answer_agent.ainvoke(
-                {
-                    "question": ctx["question"],
-                    "merged_pull_request": ctx["pr"],
-                    "codebase_files": ctx["codebase_files"],
-                }
-            )
+        a_raw = await answer_agent.ainvoke(
+            {
+                "question": ctx["question"],
+                "merged_pull_request": ctx["pr"]["summary"],
+                "codebase_files": ctx["codebase_files"],
+            }
+        )
 
         a_text = a_raw["output"][0]["text"]
         a_parsed = await parse_json_output(
@@ -157,16 +162,26 @@ async def generate_qna(ctx):
             repair_agent=json_repair, 
             model_class=ctx["AnswerModel"], 
             ctx=ctx, 
-            default={"answer": "Failed to generate answer", "sources": "Failed to generate sources"}
+            default=ctx["AnswerModel"](answer=a_text, sources=["Failed to generate sources"])
         )
+
+        a_tool_calls = [
+            {
+                "tool": action.tool,
+                "input": action.tool_input,
+                "output": str(observation)[:20]
+            }
+            for action, observation in a_raw.get("intermediate_steps", [])
+        ]
 
         ctx["answer"] = a_parsed.answer
         ctx["sources"] = a_parsed.sources
 
     except Exception as e:
         ctx["error_log"].append(
-            {"stage": "create_answer_agent", "pr_number": ctx["pr"]["number"], "error": str(e)}
+            {"stage": "create_answer_agent", "pr_number": ctx["pr"]["pr_number"], "error": str(e)}
         )
+        print(f"Error generating answer: {e}")
         ctx["answer"] = "Failed to generate answer"
         ctx["sources"] = "Failed to generate sources"
 
@@ -175,17 +190,20 @@ async def generate_qna(ctx):
         await f.write(
             json.dumps(
                 {
-                    "pr_number": ctx["pr"]["number"],
+                    "pr_number": ctx["pr"]["pr_number"],
                     "commit_hash": ctx["pr"]["base_commit"],
                     "question": ctx["question"],
                     "answer": ctx["answer"],
                     "sources": ctx["sources"],
+                    "question_tool_calls": q_tool_calls,
+                    "answer_tool_calls": a_tool_calls,
+                    "errors": ctx["error_log"],
                 }
             )
             + "\n"
         )
         await f.flush()
-        print(f"📝 qna appended for PR {ctx['pr']['number']}")  # <— debug
+        print(f"📝 qna appended for PR {ctx['pr']['pr_number']}")  # <— debug
 
     return ctx
 
@@ -203,16 +221,17 @@ async def generate_rubric(ctx):
     )
 
     r_parsed = None
+    r_tool_calls = []
 
     try:
-        with agent_log_to_file(ctx["pr"]["number"], "rubric_agent"):
-            raw = await rubric_agent.ainvoke(
-                {
-                    "query": ctx.get("question", ""),
-                    "answer": ctx.get("answer", ""),
-                    "sources": ctx.get("sources", []),
-                }
-            )
+        # async with agent_log_to_file(ctx["pr"]["pr_number"], "rubric_agent"):
+        raw = await rubric_agent.ainvoke(
+            {
+                "query": ctx.get("question", ""),
+                "answer": ctx.get("answer", ""),
+                "sources": ctx.get("sources", []),
+            }
+        )
 
         output = raw.get("output")
         if isinstance(output, list):
@@ -229,12 +248,21 @@ async def generate_rubric(ctx):
             repair_agent=json_repair, 
             model_class=ctx["RubricModel"], 
             ctx=ctx, 
-            default={"rubric": "Failed to generate rubric"}
+            default=ctx["RubricModel"](title="Failed to generate rubric", criteria=[])
         )
+
+        r_tool_calls = [
+            {
+                "tool": action.tool,
+                "input": action.tool_input,
+                "output": str(observation)[:20]
+            }
+            for action, observation in raw.get("intermediate_steps", [])
+        ]
 
     except Exception as e:
         ctx["error_log"].append(
-            {"stage": "create_rubric_agent", "pr_number": ctx["pr"]["number"], "error": str(e)}
+            {"stage": "create_rubric_agent", "pr_number": ctx["pr"]["pr_number"], "error": str(e)}
         )
     
     rubric_output = (
@@ -248,13 +276,15 @@ async def generate_rubric(ctx):
         await f.write(
             json.dumps(
                 {
-                    "pr_number": ctx["pr"]["number"],
+                    "pr_number": ctx["pr"]["pr_number"],
+                    "commit_hash": ctx["pr"]["base_commit"],
                     "rubric": rubric_output,
                     "errors": ctx["error_log"],
+                    "rubric_tool_calls": r_tool_calls,
                 }
             ) + "\n")
         await f.flush()
-        print(f"📝 rubric appended for PR {ctx['pr']['number']}")  # <— debug
+        print(f"📝 rubric appended for PR {ctx['pr']['pr_number']}")  # <— debug
 
     return ctx
 

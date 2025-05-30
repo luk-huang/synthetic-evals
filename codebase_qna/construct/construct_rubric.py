@@ -32,7 +32,8 @@ rubric_prompt = ChatPromptTemplate.from_messages([
     ("user", "Question:{query}"),
     ("user", "Answer: {answer}"),
     ("user", "Sources: {sources}"),
-    ("assistant", "{{")
+    ("assistant", "{format_instructions}"),
+    ("assistant", "Here is your rubric in the desired format: {{")
 ]).partial(format_instructions=rubric_parser.get_format_instructions())
 
 def main(args):

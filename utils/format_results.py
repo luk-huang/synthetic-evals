@@ -102,6 +102,9 @@ def plot_score_distribution(final_graded_path):
             data = json.loads(line)
             pct_scores.append(data.get("score_percent"))
 
+    # Calculate average score
+    avg_score = sum(pct_scores) / len(pct_scores)
+
     # Plot histogram of scores
     plt.hist(pct_scores, bins=range(0, 101, 10), align='left', rwidth=0.8)
     plt.xlabel("Score")
@@ -109,6 +112,10 @@ def plot_score_distribution(final_graded_path):
     plt.title("Histogram of Graded Rubric Scores")
     plt.xticks(range(0, 101, 10))
     plt.grid(axis='y')
+
+    # Add vertical dotted line for average score
+    plt.axvline(x=avg_score, color='red', linestyle=':', label=f'Average: {avg_score:.1f}')
+    plt.legend()
 
     plt.savefig(f"{final_graded_path.parent}/score_distribution.png")
 

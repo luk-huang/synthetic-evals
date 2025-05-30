@@ -1,63 +1,60 @@
 {
-    "rubric": {
-      "title": "Quality of the answer to setting up Cal.com locally and understanding its development environment",
-      "criteria": [
-        {
-          "name": "Node.js and Yarn Setup Understanding",
-          "description": "Evaluates whether the answer correctly identifies the required versions and installation of Node.js and Yarn for running Cal.com.",
-          "levels": [
-            "0: No mention of Node.js or Yarn",
-            "1: Incorrect or outdated versions referenced",
-            "2: Identifies Node.js but omits Yarn or vice versa",
-            "3: Correct versions mentioned, but lacks detail on usage",
-            "4: Clearly explains both Node.js (>=18.x) and Yarn setup steps"
-          ]
-        },
-        {
-          "name": "Environment Variable Configuration",
-          "description": "Assesses whether the answer properly explains how to duplicate .env.example and set required secrets using openssl.",
-          "levels": [
-            "0: No mention of environment variables",
-            "1: Mentions .env but not how to create or populate it",
-            "2: Mentions creation but lacks command usage",
-            "3: Mentions command usage but misses one key (NEXTAUTH_SECRET or CALENDSO_ENCRYPTION_KEY)",
-            "4: Fully accurate explanation of duplicating .env.example, using openssl to generate both secrets"
-          ]
-        },
-        {
-          "name": "Database Configuration and Migration",
-          "description": "Evaluates understanding of setting up the Postgres database and running migrations using the Prisma schema.",
-          "levels": [
-            "0: No mention of database",
-            "1: Mentions Postgres but not setup steps",
-            "2: References setup but omits Prisma migrations",
-            "3: Mentions local setup and partial migration steps",
-            "4: Clearly explains local DB setup or use of Railway/Render, and the appropriate yarn workspace @calcom/prisma commands"
-          ]
-        },
-        {
-          "name": "Docker and Mailhog Integration",
-          "description": "Assesses awareness of Docker requirements for running services like Mailhog and test Postgres containers.",
-          "levels": [
-            "0: No mention of Docker or Mailhog",
-            "1: Mentions Docker but not its purpose",
-            "2: Recognizes Mailhog but omits Docker usage",
-            "3: Mentions Mailhog with partial setup steps",
-            "4: Full explanation of why Docker is required and how to run Mailhog for email testing"
-          ] 
-        },
-        {
-          "name": "Understanding yarn dx and Dev Workflow",
-          "description": "Assesses how well the answer explains yarn dx, including its Docker dependency and dev utility.",
-          "levels": [
-            "0: No mention of yarn dx",
-            "1: Vaguely references it without purpose",
-            "2: Recognizes it starts dev environment but lacks detail",
-            "3: Explains it requires Docker and runs test users",
-            "4: Clearly explains it starts local Postgres, logs credentials, and sets up full dev environment"
-          ]
-        }
+  "title": "Rubric for Splitting Server-Specific and Shared Utilities in entityPermissionUtils",
+  "criteria": [
+    {
+      "name": "Correct File Renaming and Creation",
+      "description": "Evaluates whether the answer accurately identifies the need to rename `entityPermissionUtils.ts` to `entityPermissionUtils.server.ts` and to create `entityPermissionUtils.shared.ts`.",
+      "levels": [
+        "0: No mention of renaming or creating new files",
+        "1: Vague mention of splitting files without names",
+        "2: Mentions new file names but omits renaming",
+        "3: Mentions both renaming and creation but misses purpose of split",
+        "4: Correctly identifies renaming and creation of both `.server.ts` and `.shared.ts`, with purpose"
+      ]
+    },
+    {
+      "name": "Identification of Shared Utility (`areTheySiblingEntities`)",
+      "description": "Evaluates whether the answer correctly identifies the exact function moved to the shared file.",
+      "levels": [
+        "0: No mention of shared functions",
+        "1: Generic mention of moving 'some functions'",
+        "2: Mentions functions but incorrect ones",
+        "3: Mentions `areTheySiblingEntities` without file context",
+        "4: Accurately identifies `areTheySiblingEntities` was moved to `entityPermissionUtils.shared.ts`"
+      ]
+    },
+    {
+      "name": "Awareness of Import Path Refactors",
+      "description": "Evaluates whether the answer correctly specifies updated import paths for server and shared utilities across the codebase.",
+      "levels": [
+        "0: No mention of imports",
+        "1: Mentions updating imports without paths",
+        "2: Mentions paths but uses wrong module syntax",
+        "3: Provides mostly correct import paths but minor errors",
+        "4: Correctly states updated import paths: `@calcom/lib/entityPermissionUtils.server` and `.shared`"
+      ]
+    },
+    {
+      "name": "Selective Migration of Server Code",
+      "description": "Evaluates whether the answer avoids overgeneralizing and respects which functions should remain server-only.",
+      "levels": [
+        "0: No distinction between shared and server code",
+        "1: Suggests moving everything to shared",
+        "2: Suggests split but vague on criteria",
+        "3: Recognizes server-only logic should remain but lacks precision",
+        "4: States shared functions should be logic-only, and server ones tied to DB or API calls"
+      ]
+    },
+    {
+      "name": "Codebase Familiarity (Bonus)",
+      "description": "Evaluates whether the answer reflects specific knowledge of where these utils are used or tested (e.g., entityType.ts, org workflows).",
+      "levels": [
+        "0: No mention of usage context",
+        "1: Mentions 'used elsewhere' with no details",
+        "2: Suggests update to callers but not specific locations",
+        "3: Mentions usage in `lib/entityType.ts` or related server modules",
+        "4: Names exact call sites or test files touched by the PR"
       ]
     }
+  ]
 }
-  

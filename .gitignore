@@ -4,7 +4,8 @@ cal.com/
 evaluation_suite/config/.env
 *.log
 .env
-
-
+worktrees*/
+tmp/
+ladybird/
 __pycache__/
 *.py[cod]

@@ -1,6 +1,7 @@
 from langchain_core.tools import tool, Tool
 import os
 import requests
+from typing import Dict, Any
 
 def save_file(content: str, file_path: str = "log/log.txt") -> str:
     with open(file_path, 'w') as file:
@@ -80,3 +81,16 @@ list_files_tool = Tool(
 
 
     
+def create_read_diff_tool(pr: Dict[str, Any]) -> Tool:
+    @tool
+    def custom_read_diff(input: str = "", **kwargs) -> str:
+        """
+        Returns the raw diff of the PR.
+        Ignores any incoming arguments 
+        """
+        return pr["diff"]
+    return Tool(
+        name="read_diff",
+        description="Read the diff of the PR. Use this tool to validate whether the answer references the same content as the PR diff. Ignores any incoming arguments",
+        func=custom_read_diff
+    )

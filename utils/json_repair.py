@@ -10,6 +10,10 @@ from pydantic import BaseModel
 from langchain.output_parsers import OutputFixingParser, PydanticOutputParser
 from langchain_openai import ChatOpenAI
 import openai
+from langchain_anthropic import ChatAnthropic
+from langchain_core.prompts import ChatPromptTemplate
+import asyncio
+import os
 
 def clean_json(input_path: Path, output_path: Path) -> None:
     """
@@ -83,12 +87,57 @@ class JSONRepairAgent():
         """
         Attempts to parse and repair a JSON output to match the provided Pydantic schema.
         """
-        # ✅ Use retry with LangChain LLM call
+
+        self.parser = PydanticOutputParser(pydantic_object=schema_model)
+
         @retry_with_exponential_backoff()
         def parse_with_backoff(output: str):
-            return PydanticOutputParser(pydantic_object=schema_model).parse(output)
+            return OutputFixingParser.from_llm(llm=self.llm, parser=self.parser, max_retries=0).parse(output)
         
         return parse_with_backoff(raw_output)
+    
+class ClaudeJSONRepairAgent():
+    def __init__(self, model_name: str = "claude-3-5-sonnet-20240620"):
+        load_dotenv()
+        self.llm = ChatAnthropic(
+            model_name=model_name,
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            timeout=None,
+            stop=None,
+        )
+
+    async def repair_json_output(self, raw_output: str, schema_model: Type[BaseModel]) -> BaseModel:
+        """
+        Attempts to parse and repair a JSON output to match the provided Pydantic schema.
+        """
+        
+        parser = PydanticOutputParser(pydantic_object=schema_model)
+        
+        system_prompt = """
+        You are a JSON repair agent. You are given a close to valid JSON output and a Pydantic schema.
+        You need to repair or extract the JSON output to match the Pydantic schema.
+        """
+
+        user_prompt = f"""
+        JSON output: {raw_output}
+        """
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("user", user_prompt),
+            ("assistant", "{format_instructions}"),
+            ("placeholder", "{agent_scratchpad}"),
+            ("assistant", "Here is the correctly formatted JSON: {{")
+        ]).partial(
+            format_instructions=parser.get_format_instructions()
+        )
+
+        chain = prompt | self.llm | OutputFixingParser.from_llm(llm=self.llm, parser=parser, max_retries=2)
+        fixed_model: BaseModel = await chain.ainvoke({"raw_output": raw_output})  # this returns the parsed BaseModel
+        
+        return fixed_model
+    
+
 
 
 if __name__ == "__main__":
