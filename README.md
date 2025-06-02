@@ -193,9 +193,41 @@ Example Rubric (for PR #4446 – Adding New Color Primaries Support)
 
 ## Evaluation Flow with Multi-Turn Interaction 
 
-Here’s a concise and clean version of that section for your README:
+When we evaluate we guide the model through a 6 step process 
 
----
+```mermaid
+graph TD
+  A[Step 1: Ground Truth] --> B[Step 2: Verify Answer]
+  B --> C[Step 3: Context Relevance]
+  C --> D[Step 4: Apply Guardrails]
+  D --> E[Step 5: Score with Rubric]
+  E --> F[Step 6: Write Socratic Feedback]
+
+  subgraph Tools Used
+    T1[list_changed_files()]
+    T2[get_diff()]
+    T3[file_exists(path)]
+    T4[read_file(path)]
+    T5[deepwiki_ask_question()]
+  end
+
+  T1 --> A
+  T2 --> A
+  T3 --> B
+  T4 --> B
+  T5 --> A
+  T5 --> C
+```
+
+Hacking the rubric is prevented through verifiable evaluations/tools available to the LLM judge
+
+* File checks: All referenced paths are verified with `file_exists()` and `read_file()`. Hallucinated files result in score caps or zeros.
+* Diff alignment: `get_diff()` ensures answers address the actual change. Irrelevant plans are penalized.
+* Context relevance: Generic reasoning / Boilerplate answers not tied to the codebase are penalized
+* DeepWiki validation: Architectural claims are checked against real project structure.
+
+> These checks ensure that only factually grounded, context-aware answers score well.
+
 
 ### Single-Turn Evaluation
 
