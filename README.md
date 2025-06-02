@@ -204,11 +204,11 @@ graph TD
   E --> F[Step 6: Write Socratic Feedback]
 
   subgraph Tools Used
-    T1[list_changed_files()]
-    T2[get_diff()]
-    T3[file_exists(path)]
-    T4[read_file(path)]
-    T5[deepwiki_ask_question()]
+    T1[list_changed_files]
+    T2[get_diff]
+    T3[file_exists]
+    T4[read_file]
+    T5[deepwiki_ask_question]
   end
 
   T1 --> A
