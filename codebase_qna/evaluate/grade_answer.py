@@ -18,6 +18,7 @@ class CriterionGrade(BaseModel):
 
 class GradedRubric(BaseModel):
     graded_criteria: List[CriterionGrade] = Field(..., description="List of graded rubric items.")
+    feedback: str = Field(..., description="Feedback for the answer.")
 
 grade_rubric_parser = PydanticOutputParser(pydantic_object=GradedRubric)
 
@@ -27,7 +28,7 @@ grade_rubric_prompt = ChatPromptTemplate.from_messages([
     ("placeholder", "{agent_scratchpad}"),
     ("user", "Rubric to apply: {rubric}"),
     ("user", "Question: {question}"),
-    ("user", "Answer: {answer}")
+    ("user", "Answer to grade: {answer}")
 ]).partial(
     format_instructions=grade_rubric_parser.get_format_instructions()
 )

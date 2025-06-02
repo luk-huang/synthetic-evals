@@ -9,3 +9,5 @@ tmp/
 ladybird/
 __pycache__/
 *.py[cod]
+dify/
+vapor/

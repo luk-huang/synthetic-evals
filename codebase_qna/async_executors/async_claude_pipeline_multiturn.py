@@ -4,15 +4,19 @@ from dotenv import load_dotenv
 from utils.codebase_utils import WorktreeManager          # your helper
 from codebase_qna.prompt_templates.prompts import ANSWER_SYSTEM_PROMPT  # your prompt
 import aiofiles
+import traceback
 
 MAX_CONCURRENCY = 10
 
 # ---------- per-question coroutine ------------------------------------------
 async def run_question(item: dict, manager: WorktreeManager,
-                       sem: asyncio.Semaphore, output_file: Path, args: argparse.Namespace) -> dict | None:
+                       sem: asyncio.Semaphore, output_file: Path, 
+                       args: argparse.Namespace) -> dict | None:
     """Process one {commit_hash, question} record and write its answer to file."""
     commit_hash = item["commit_hash"]
     question     = item["question"]
+    feedback     = item["feedback"]
+    agent_answer = item["agent_answer"]
 
     # Compose full Claude prompt
     full_prompt = (
@@ -21,7 +25,9 @@ async def run_question(item: dict, manager: WorktreeManager,
         "and try to think of the true intent of the question. Therefore refrain "
         "from asking too many clarifications. The junior is trying to figure out "
         "how to implement or fix something. Therefore answer as thoroughly as possible.\n\n"
-        f"{question}"
+        f"Question: {question}\n\n"
+        f"Here was your previous answer: {agent_answer}\n\n"
+        f"Here is the feedback from the senior: {feedback}\n\n"
     )
 
     async with sem:                     # limit overall concurrency
@@ -39,10 +45,14 @@ async def run_question(item: dict, manager: WorktreeManager,
                 "claude", "-p", full_prompt, 
                 "--model", args.model,
                 "--allowedTools", f"Read({wt_path})",
+                # "--output-format", "json",
+                # "--verbose",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
 
+            # 3) live-stream & capture 
+        
             captured_lines: list[str] = []
             async for raw in proc.stdout:                # type: ignore[attr-defined]
                 line = raw.decode()
@@ -59,7 +69,6 @@ async def run_question(item: dict, manager: WorktreeManager,
             if attempt == 2:
                 response = "(no content)"
                 print(f"[{commit_hash}] Claude Code has failed 3 times, skipping...")
-                
 
         # 4) clean up work-tree
         try:
@@ -116,20 +125,49 @@ async def main_async(args):
             else:
                 output_path.unlink()
 
-    questions = []
+    questions_dict = {}
     with questions_path.open() as f:
         for line in f:
             data = json.loads(line)
             if data["pr_number"] not in pr_numbers_already_ran:
-                questions.append(data)
+                questions_dict[data["pr_number"]] = data
 
-    print(f"✅ Running {len(questions)} Questions")
+        print(f"✅ Found {len(questions_dict)} Questions to grade")
+
+    with open(args.feedback_file, "r") as f:
+        graded_response_dict = {}
+        count = 0
+        for line in f:
+            count += 1
+            data = json.loads(line)
+            pr_number = data["pr_number"]
+            print(pr_number)
+            if pr_number not in pr_numbers_already_ran:
+                graded_response_dict[pr_number] = data
+                questions_dict[pr_number].update(
+                    {"feedback": data["graded_rubric"]["feedback"], 
+                    "agent_answer": data["agent_answer"]}
+                    )
+
+        print(f"✅ Found {len(graded_response_dict)} PRs in feedback file to grade")
+
+    print(f"✅ Running {len(questions_dict)} Questions")
 
     manager = WorktreeManager(args.repo_path, task = "claude_qna")
     sem     = asyncio.Semaphore(args.max_concurrency)
 
-    tasks = [asyncio.create_task(run_question(q, manager, sem, output_path, args))
-             for q in questions]
+    tasks = [
+        asyncio.create_task(
+            run_question(
+                questions_dict[pr_number], 
+                manager, 
+                sem, 
+                output_path, 
+                args
+            )
+        )
+        for pr_number in graded_response_dict.keys()
+    ]
     results = await asyncio.gather(*tasks)
 
     print(f"✅ completed {sum(rec is not None for rec in results)} answers → {output_path}")
@@ -139,6 +177,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--repo_path",      required=True)
     p.add_argument("--questions_file", required=True)
+    p.add_argument("--feedback_file", required=True)
     p.add_argument("--model", default="claude-3-7-sonnet-20250219")
     p.add_argument("--output_file")
     p.add_argument("--resume", required=False, action="store_true", default=False)
@@ -148,48 +187,14 @@ if __name__ == "__main__":
     asyncio.run(main_async(p.parse_args()))
 
 '''
-# default is claude-3-7-sonnet-20250219
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_claude_pipeline.py \
-    --repo_path cal.com/ \
-    --questions_file  logs/calcom_cal.com_10pages_2025-05-27/qna.jsonl 
-    --model claude-3-7-sonnet-20250219
-
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_claude_pipeline.py \
-    --repo_path cal.com/ \
-    --questions_file logs/calcom_cal.com_10pages_v2/qna.jsonl \
-    --output_file logs/calcom_cal.com_10pages_v2/claude_code/claude_code_answers.jsonl \
-    --model claude-3-7-sonnet-20250219
-
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_claude_pipeline.py \
-    --repo_path cal.com/ \
-    --questions_file logs/calcom_cal.com_100pages_date2025-05-28/qna.jsonl \
-    --output_file logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude_code_answers.jsonl \
-    --model claude-3-7-sonnet-20250219
-
-
 # Claude 3.7 Sonnet 20250219
 
 PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_claude_pipeline.py \
-    --repo_path cal.com/ \
-    --questions_file logs/calcom_cal.com_100pages_date2025-05-28/qna_v4.jsonl \
-    --output_file logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.7_code_answers_v4.jsonl \
-    --model claude-3-7-sonnet-20250219
-
-# Claude 3.5 Sonnet 20240620
-
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_claude_pipeline.py \
-    --repo_path cal.com/ \
-    --questions_file logs/calcom_cal.com_100pages_date2025-05-28/qna_v4.jsonl \
-    --output_file logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.5_sonnet_code_answers_v4.jsonl \
-    --model claude-3-5-sonnet-20240620
-
-# Claude 3.5 Haiku 20241022
-    
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_claude_pipeline.py \
-    --repo_path cal.com/ \
-    --questions_file logs/calcom_cal.com_100pages_date2025-05-28/qna_v4.jsonl \
-    --output_file logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.5_haiku_code_answers_v4.jsonl \
-    --model claude-3-5-haiku-20241022
-
+    --repo_path ladybird/ \
+    --feedback_file logs/LadybirdBrowser_ladybird_3pages_date2025-05-30/claude_code/claude3.7_graded_rubrics_150.jsonl \
+    --questions_file logs/LadybirdBrowser_ladybird_3pages_date2025-05-30/qna_150.jsonl \
+    --output_file logs/LadybirdBrowser_ladybird_3pages_date2025-05-30/claude_code/claude3.7_answers_round2_150.jsonl \
+    --model claude-3-7-sonnet-20250219 \
+    --max_concurrency 10 
 
 '''

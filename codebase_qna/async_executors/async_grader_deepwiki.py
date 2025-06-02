@@ -17,9 +17,28 @@ from langchain_core.tools import Tool
 # ---------- schema, prompt & parser (same as your script) -------------
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
-from codebase_qna.evaluate.grade_answer import CriterionGrade, GradedRubric, grade_rubric_prompt
+from codebase_qna.evaluate.grade_answer import CriterionGrade, GradedRubric
+from langchain_core.messages import SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from codebase_qna.prompt_templates.prompts import GRADE_SYSTEM_PROMPT_DEEPWIKI
+
+grade_rubric_parser = PydanticOutputParser(pydantic_object=GradedRubric)
+
+grade_rubric_prompt = ChatPromptTemplate.from_messages([
+    SystemMessage(GRADE_SYSTEM_PROMPT_DEEPWIKI),
+    ("assistant", "{format_instructions}"),
+    ("placeholder", "{agent_scratchpad}"),
+    ("user", "full_repo_path for DeepWiki Tools: {full_repo_name}"),
+    ("user", "Rubric to apply: {rubric}"),
+    ("user", "Question: {question}"),
+    ("user", "Answer to grade: {answer}")
+]).partial(
+    format_instructions=grade_rubric_parser.get_format_instructions()
+)
+
 from utils.json_repair import JSONRepairAgent, ClaudeJSONRepairAgent       # helper for invalid JSON\
 from utils.codebase_utils import WorktreeManager
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 json_repair_agent = ClaudeJSONRepairAgent()
 
@@ -159,36 +178,6 @@ async def filter_and_clean_graded_rubrics(
     print(f"✅ Cleaned file written to {cleaned_path}")
     return failed_pr_numbers
 
-def extract_json_after_key(raw: str, key: str) -> str | None:
-    """
-    Finds the first occurrence of `"key":` and then walks backward to the
-    preceding '{', then scans forward (counting braces) to extract exactly
-    one balanced JSON object.
-    """
-    # 1) Find where `"graded_criteria"` appears
-    idx_key = raw.find(f'"{key}"')
-    if idx_key < 0:
-        return None
-
-    # 2) Walk backward from idx_key to find the opening '{' that begins the object
-    start = raw.rfind("{", 0, idx_key)
-    if start < 0:
-        return None
-
-    # 3) Now count braces forward from that '{'
-    depth = 0
-    for i in range(start, len(raw)):
-        if raw[i] == "{":
-            depth += 1
-        elif raw[i] == "}":
-            depth -= 1
-
-        if depth == 0:
-            return raw[start : i + 1]
-
-    return None  # unbalanced
-
-
 async def parse_json_output_grade_rubric(
     text: str,
     schema: type[BaseModel],
@@ -221,30 +210,6 @@ async def parse_json_output_grade_rubric(
     except Exception:
         pass
 
-    try:
-        json_block = extract_json_after_key(raw, "graded_criteria")
-        if json_block is not None:
-            return parser.parse(json_block)
-    except Exception:
-        pass
-
-    try:
-        json_block = extract_json_after_key(raw, ": [")
-        if json_block is not None:
-            return parser.parse(json_block)
-    except Exception:
-        pass
-
-    try:
-        # Pattern matches a top-level { … } including one level of nesting
-        pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        all_matches = re.findall(pattern, raw)
-        if all_matches:
-            last_block = all_matches[-1]
-            return parser.parse(last_block)
-    except Exception:
-        pass
-
     # Try repair with raw JSON
     try:
         return await repair_agent.repair_json_output(raw, schema)
@@ -258,8 +223,13 @@ async def parse_json_output_grade_rubric(
         return default
 
 async def grade_worker(
-        row: Dict[str, str], sem: asyncio.Semaphore, llm: ChatAnthropic, 
-        graded_rubric_parser: PydanticOutputParser, output_file: Path, worktree_manager: WorktreeManager
+        row: Dict[str, str], 
+        sem: asyncio.Semaphore, 
+        llm: ChatAnthropic, 
+        graded_rubric_parser: PydanticOutputParser, 
+        output_file: Path, 
+        worktree_manager: WorktreeManager,
+        mcp_tools: List[Tool]
     ) -> Dict[str, Any] | None:
 
     """Grade one (question, answer, rubric) row.  Returns None on hard failure."""
@@ -271,10 +241,12 @@ async def grade_worker(
             print(f"Failed to create worktree for {row['commit_hash']}", e)
             return None
         
-        tools = [create_file_exists_tool(str(wt_path)), 
-                 create_read_file_tool(str(wt_path)),
-                 create_list_changed_files_tool(row), 
-                 create_get_diff_tool(row)]
+        tools: List[Tool] = mcp_tools + [
+            create_file_exists_tool(str(wt_path)), 
+            create_read_file_tool(str(wt_path)),
+            create_list_changed_files_tool(row), 
+            create_get_diff_tool(row)
+        ]
 
         agent = create_tool_calling_agent(llm, tools, prompt=grade_rubric_prompt)
         executor = AgentExecutor(
@@ -288,12 +260,15 @@ async def grade_worker(
         )
 
         tool_calls = []
+        graded: GradedRubric | None = None
+
         try:
             result = await executor.ainvoke(
                 {
                 "rubric":   json.dumps(row["rubric"]),
                 "question": row["question"],
                 "answer":   row["answer"],
+                "full_repo_name": row["full_repo_name"]
                 },
                 return_intermediate=True
             )
@@ -335,6 +310,10 @@ async def grade_worker(
             async with aiofiles.open(output_file, 'a') as f:
                 await f.write(json.dumps(result) + "\n")
                 await f.flush()
+            try:
+                await worktree_manager.release(row["commit_hash"])
+            except Exception as e:
+                print(f"Failed to delete worktree for {row['commit_hash']}", e)
             return result
         
         try:
@@ -347,7 +326,12 @@ async def grade_worker(
     # --- compute percentage score ---
     if graded is None:
         pct = "Failed to grade"
-        graded = GradedRubric(graded_criteria=[CriterionGrade(name="Failed to grade", score=0, justification="Failed to grade")], feedback="Failed to grade")
+        graded = GradedRubric(
+            graded_criteria = [CriterionGrade(
+                name="Failed to grade", score=0, justification="Failed to grade"
+            )], 
+            feedback="Failed to grade"
+        )
     
     else:
         total   = sum(c.score for c in graded.graded_criteria)
@@ -363,8 +347,8 @@ async def grade_worker(
         "score_percent": pct,
         "graded_rubric": graded.model_dump(),
         "feedback":      graded.feedback,
-        "tool_calls": tool_calls,
-        "agent_answer": row["answer"],
+        "tool_calls":    tool_calls,
+        "agent_answer":  row["answer"],
         "question":      row["question"],
         "rubric":        row["rubric"],   
     }
@@ -385,41 +369,46 @@ async def run_parallel(
         out_path: Path, 
         llm: ChatAnthropic, 
         graded_rubric_parser: PydanticOutputParser, 
-        resume: bool = False,
-        num_to_grade: int | None = None,
-        worktree_manager: WorktreeManager = None
+        resume: bool,
+        num_to_grade: int,
+        worktree_manager: WorktreeManager,
+        mcp_tools: List[Tool], 
+        full_repo_name: str 
     ):
 
+    global MAX_PARALLEL
     sem = asyncio.Semaphore(MAX_PARALLEL)
 
     a_dict = {obj["pr_number"]: obj for obj in map(json.loads, answer_path.read_text().splitlines())}
     r_dict = {obj["pr_number"]: obj for obj in map(json.loads, rubric_path.read_text().splitlines())}
     pr_dict = {obj["pr_number"]: obj for obj in map(json.loads, merged_prs_path.read_text().splitlines())}
 
-    shared = r_dict.keys() & a_dict.keys() 
+    shared = a_dict.keys() & r_dict.keys()
+    rows = []
     
-    if "answer" not in a_dict[list(shared)[0]]:
-        rows   = [
-            {"pr_number": k, 
-             "changed_files": pr_dict[k]["changed_files"],
-             "diff": pr_dict[k]["diff"],
-             "commit_hash": a_dict[k]["commit_hash"], 
-             "question": a_dict[k]["question"], 
-             "answer": a_dict[k]["response"], 
-             "rubric": r_dict[k]["rubric"]} 
-        for k in shared]
-    else:
-        rows   = [
-            {"pr_number": k, 
-             "changed_files": pr_dict[k]["changed_files"],
-             "diff": pr_dict[k]["diff"],
-             "commit_hash": a_dict[k]["commit_hash"], 
-             "question": a_dict[k]["question"], 
-             "answer": a_dict[k]["answer"], 
-             "rubric": r_dict[k]["rubric"]
-    } for k in shared]
+    for k in shared:
+        base = {
+            "pr_number":    k,
+            "changed_files": pr_dict[k]["changed_files"],
+            "diff":         pr_dict[k]["diff"],
+            "commit_hash":  a_dict[k]["commit_hash"],
+            "full_repo_name": full_repo_name
+        }
+        if "answer" not in a_dict[k]:
+            base.update({
+                "question": a_dict[k]["question"],
+                "answer":   a_dict[k]["response"],
+                "rubric":   r_dict[k]["rubric"]
+            })
+        else:
+            base.update({
+                "question": a_dict[k]["question"],
+                "answer":   a_dict[k]["answer"],
+                "rubric":   r_dict[k]["rubric"]
+            })
+        rows.append(base)
     
-    print(f"Found {len(rows)} PRs to grade")
+    print(f"Grading {len(rows)} questions")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -428,23 +417,12 @@ async def run_parallel(
             print("Output file does not exist. Please run without --resume.")
             return
         failed_pr_numbers = await filter_and_clean_graded_rubrics(answer_path, out_path, out_path)
-
-        already_succeeded: Set[str] = set()
-        async with aiofiles.open(out_path, mode="r") as f:
-            async for line in f:
-                entry = json.loads(line)
-                pr = entry["pr_number"]
-                if entry.get("score_percent") != "Failed to grade":
-                    already_succeeded.add(pr)
-
-        rows = [row for row in rows 
-                if row["pr_number"] not in failed_pr_numbers
-                and row["pr_number"] not in already_succeeded]
+        rows = [row for row in rows if row["pr_number"] not in failed_pr_numbers]
 
     if num_to_grade:
         rows = rows[:num_to_grade]
 
-    tasks = [asyncio.create_task(grade_worker(row, sem, llm, graded_rubric_parser, out_path, worktree_manager)) 
+    tasks = [asyncio.create_task(grade_worker(row, sem, llm, graded_rubric_parser, out_path, worktree_manager, mcp_tools)) 
              for row in rows]
 
     results = await asyncio.gather(*tasks)
@@ -475,10 +453,33 @@ def main(args):
     global MAX_PARALLEL
     MAX_PARALLEL = int(args.max_parallel)
 
+    # ---------------- DeepWiki MCP tools ------------------------ #
+    async def get_mcp_tools() -> List[Tool]:
+        mcp_client = MultiServerMCPClient({
+            "deepwiki": {
+                "url": "https://mcp.deepwiki.com/sse",
+                "transport": "sse"
+            }
+        })
+        mcp_tools = await mcp_client.get_tools()
+        return mcp_tools
+
+    mcp_tools = asyncio.run(get_mcp_tools())
+
     # --------------------------------------------------------------------- #
 
     asyncio.run(run_parallel(
-        args.formatted_prs_path, args.answer_path, args.rubric_path, args.output_path, llm, graded_rubric_parser, args.resume, args.num_to_grade, worktree_manager
+        args.formatted_prs_path, 
+        args.answer_path, 
+        args.rubric_path, 
+        args.output_path, 
+        llm, 
+        graded_rubric_parser, 
+        args.resume, 
+        args.num_to_grade, 
+        worktree_manager, 
+        mcp_tools,
+        args.full_repo_name
     ))
 
     print("✅ Graded rubrics written to", args.output_path)
@@ -488,6 +489,7 @@ if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--repo_path",     required=True, type=Path)
+    p.add_argument("--full_repo_name", required=True, type=str)
     p.add_argument("--formatted_prs_path", required=True, type=Path)
     p.add_argument("--rubric_path",   required=True, type=Path)
     p.add_argument("--answer_path",   required=True, type=Path)
@@ -500,47 +502,19 @@ if __name__ == "__main__":
     main(args)
 
 '''
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader.py \
-    --repo_path     cal.com \
-    --formatted_prs_path logs/calcom_cal.com_100pages_date2025-05-28/merged_prs_formatted.jsonl \
-    --rubric_path   logs/calcom_cal.com_100pages_date2025-05-28/rubrics.jsonl \
-    --answer_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude_code_answers.jsonl  \
-    --output_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude_graded_rubrics.jsonl \
-    --model claude-3-7-sonnet-20250219 \
-    --resume --num_to_grade 15 --max_parallel 10
 
 # Grade 3.7 sonnet
     
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader.py \
+PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader_deepwiki.py \
     --repo_path     cal.com \
+    --full_repo_name calcom/cal.com \
     --formatted_prs_path logs/calcom_cal.com_100pages_date2025-05-28/merged_prs_formatted.jsonl \
-    --rubric_path   logs/calcom_cal.com_100pages_date2025-05-28/rubrics_v4.jsonl \
-    --answer_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.7_code_answers_v4.jsonl  \
-    --output_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.7_graded_rubrics_v4.jsonl \
+    --rubric_path   logs/calcom_cal.com_100pages_date2025-05-28/rubrics_150.jsonl \
+    --answer_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.7_answers.jsonl  \
+    --output_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.7_graded_rubrics_deepwiki.jsonl \
     --model claude-3-7-sonnet-20250219 \
-    --resume --num_to_grade 50 --max_parallel 10
+    --num_to_grade 50 --max_parallel 10 --resume 
 
-# Grade 3.5 sonnet
-
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader.py \
-    --repo_path     cal.com \
-    --formatted_prs_path logs/calcom_cal.com_100pages_date2025-05-28/merged_prs_formatted.jsonl \
-    --rubric_path   logs/calcom_cal.com_100pages_date2025-05-28/rubrics_v4.jsonl \
-    --answer_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.5_sonnet_code_answers_v4.jsonl  \
-    --output_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.5_sonnet_graded_rubrics_v4.jsonl \
-    --model claude-3-7-sonnet-20250219 \
-    --num_to_grade 70 --max_parallel 10 --resume 
-
-# Grade 3.5 haiku
-
-PYTHONPATH=$(pwd) python codebase_qna/async_executors/async_grader.py \
-    --repo_path     cal.com \
-    --formatted_prs_path logs/calcom_cal.com_100pages_date2025-05-28/merged_prs_formatted.jsonl \
-    --rubric_path   logs/calcom_cal.com_100pages_date2025-05-28/rubrics_v4.jsonl \
-    --answer_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.5_haiku_code_answers_v4.jsonl  \
-    --output_path   logs/calcom_cal.com_100pages_date2025-05-28/claude_code/claude3.5_haiku_graded_rubrics_v4.jsonl \
-    --model claude-3-7-sonnet-20250219 \
-    --num_to_grade 70 --max_parallel 10 --resume 
 
 
 '''

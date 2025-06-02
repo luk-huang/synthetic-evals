@@ -96,7 +96,7 @@ def make_code_text(files_dict, add_line_numbers=True):
 class WorktreeManager:
     def __init__(self, repo_path: str, task: str = None):
         if task:
-            self.task_id = task
+            self.task_id = task + "_" + str(uuid.uuid4())
         else:
             self.task_id = str(uuid.uuid4())
 

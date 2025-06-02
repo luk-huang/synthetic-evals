@@ -75,36 +75,93 @@ In recorded-daily-video.ts, we update the webhook and email logic to send this p
 
 This avoids leaking long-lived links in emails and makes them configurable by team in the future. ''' 
 
-Let's grade this carefully step by step
+Let's grade this carefully step by step through Chain-of-Thought
+
+Env-Var (0–4)
+
+I look for mention of CAL_VIDEO_RECORDING_TOKEN_SECRET.
+
+The answer says “Add CAL_VIDEO_RECORDING_TOKEN_SECRET to .env.example.”
+
+That names the exact var and the .env.example location—but doesn’t explain why it’s needed for HMAC signing or rotation.
+
+→ Score: 3
+
+Proxy Route (0–4)
+
+I expect /api/video/recording, plus behavior detail (validation/redirect).
+
+The answer: “The API route /api/video/recording now verifies tokens using verifyVideoToken() and redirects to the real download.”
+
+That describes validation & redirect, but doesn’t mention status codes or tests.
+
+→ Score: 3
+
+Token Helpers (0–4)
+
+I check for both generateVideoToken() and verifyVideoToken(), plus TTL detail.
+
+The answer:
+
+Mentions verifyVideoToken() in the route description.
+
+Mentions generateVideoToken() with the default expiry number.
+
+Covers both helpers and TTL, but omits HMAC-secret mechanics.
+
+→ Score: 3
+
+Default TTL (0–4)
+
+I look for the literal 262992 and whether it’s explained.
+
+The answer: “with a default expiry of 262992 minutes (6 months).”
+
+Quotes both the minutes and the human-friendly conversion.
+
+→ Score: 4
+
+Emails & Webhooks (0–4)
+
+I expect mention of both email and webhook code changes, with file references.
+
+The answer: “In recorded-daily-video.ts, we update the webhook and email logic…”
+
+Cites the correct file and both systems; doesn’t call out edge-case tests.
+
+→ Score: 3
+
 {
   "graded_criteria": [
     {
       "name": "Env-Var",
       "score": 3,
-      "justification": "Evidence: “Add CAL_VIDEO_RECORDING_TOKEN_SECRET to .env.example.” → Names the exact variable and its location in `.env.example`, matching Level 3. Missing: no explanation of HMAC‐signing or secret‐rotation rationale (thus cannot earn Level 4)."
+      "justification": "Names CAL_VIDEO_RECORDING_TOKEN_SECRET and its location in .env.example, but omits security rationale for HMAC signing."
     },
     {
       "name": "Proxy Route",
       "score": 3,
-      "justification": "Evidence: “The API route /api/video/recording now verifies tokens using verifyVideoToken() and redirects to the real download.” → Correct route name and behavior (validation + redirect), matching Level 3. Missing: status‐code details (e.g., 302 vs 401) and no reference to `route.test.ts`, so it cannot reach Level 4."
+      "justification": "Correctly names /api/video/recording and explains token validation & redirect, but no mention of status codes or test file."
     },
     {
       "name": "Token Helpers",
       "score": 3,
-      "justification": "Evidence: Mentions both `generateVideoToken()` (“Tokens are generated using generateVideoToken() with a default expiry 262992 minutes”) and `verifyVideoToken()` (used in the route). That covers Level 3. Missing: no description of HMAC‐secret usage or how expiry is enforced at the crypto level, so not Level 4."
+      "justification": "Mentions both generateVideoToken() and verifyVideoToken() with default TTL, but doesn’t explain HMAC secret usage."
     },
     {
       "name": "Default TTL",
       "score": 4,
-      "justification": "Evidence: “default expiry of 262992 minutes (6 months).” → Quotes exact number 262992 minutes and converts it to 6 months, fulfilling Level 4."
+      "justification": "Accurately quotes 262992 minutes and converts it to 6 months for clarity."
     },
     {
       "name": "Emails & Webhooks",
       "score": 3,
-      "justification": "Evidence: “In recorded-daily-video.ts, we update the webhook and email logic to send this proxy URL instead of the direct link.” → Cites the file `recorded-daily-video.ts` and mentions both emails & webhooks, matching Level 3. Missing: no mention of edge‐case tests (e.g., 401/404/500), so it cannot score Level 4."
+      "justification": "References recorded-daily-video.ts for both email and webhook updates, but omits edge-case test scenarios."
     }
   ]
 }
+
+
 
 Plausible But Bad Answer:
 
@@ -116,32 +173,76 @@ Unit tests can go in videoClient.test.ts '''
 
 Let's grade this carefully step by step through Chain-of-Thought
 
+Env-Var
+
+I look for the exact variable CAL_VIDEO_RECORDING_TOKEN_SECRET.
+
+The answer says VIDEO_URL_EXPIRY_SECRET → wrong name.
+
+Score: 0
+
+Proxy-Route
+
+I expect /api/video/recording.
+
+The answer proposes /api/video/downloadLink → doesn’t match.
+
+Score: 0
+
+Token-Functions
+
+I check for mention of generateVideoToken and verifyVideoToken.
+
+Neither appears in the answer.
+
+Score: 0
+
+Default-TTL-Minutes
+
+I look for the literal 262992 (default expiry in minutes).
+
+No number is given.
+
+Score: 0
+
+Emails & Webhooks
+
+I expect reference to both the email and webhook changes in recorded-daily-video files.
+
+The answer only says “Update the mailer” (vague) and ignores webhooks.
+
+Score: 1
+
+Therefore the graded rubric is 
+
+
 {
   "graded_criteria": [
     {
-      "name": "Env-Var",
+      "name": "Env-var",
       "score": 0,
-      "justification": "Evidence: Uses `VIDEO_URL_EXPIRY_SECRET` instead of `CAL_VIDEO_RECORDING_TOKEN_SECRET`. That is not the exact variable, so it falls under Level 0 (“No env‐var mentioned” or “wrong env‐var”)."
+      "justification": "Uses incorrect env var name 'VIDEO_URL_EXPIRY_SECRET' instead of 'CAL_VIDEO_RECORDING_TOKEN_SECRET'."
     },
     {
-      "name": "Proxy Route",
+      "name": "Proxy-route",
       "score": 0,
-      "justification": "Evidence: Proposes `/api/video/downloadLink` rather than the required `/api/video/recording`. Doesn’t match any Level 1–4 description; therefore Level 0."
+      "justification": "Mentions '/api/video/downloadLink' rather than the actual '/api/video/recording' route."
     },
     {
-      "name": "Token Helpers",
+      "name": "Token-functions",
       "score": 0,
-      "justification": "Evidence: No reference to `generateVideoToken()` or `verifyVideoToken()`. Fails to mention either helper, so Level 0."
+      "justification": "Does not reference generateVideoToken or verifyVideoToken helpers."
     },
     {
-      "name": "Default TTL",
+      "name": "Default-TTL-minutes",
       "score": 0,
-      "justification": "Evidence: No numeric TTL (no mention of 262992). Fails to mention the default numeric expiry, so Level 0."
+      "justification": "No mention of the numeric default TTL '262992'."
     },
     {
-      "name": "Emails & Webhooks",
+      "name": "Emails+Webhooks",
       "score": 1,
-      "justification": "Evidence: “Update the mailer to include the signed URL.” → Mentions emails but does not mention webhooks or any file reference. This matches Level 1 (only one piece mentioned). Missing: webhook integration, file references, edge‐case tests."
+      "justification": "Only vaguely mentions updating the mailer; ignores webhook integration and file references."
     }
   ]
 }
+

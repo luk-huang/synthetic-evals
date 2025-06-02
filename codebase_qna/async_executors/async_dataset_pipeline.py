@@ -13,6 +13,7 @@ import shutil
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
 from typing import List
+import sys
 
 STAGES = [generate_qna, generate_rubric]
 
@@ -202,12 +203,23 @@ async def main(args):
     sem = asyncio.Semaphore(max_concurrency)
 
     if args.resume:
+        if not os.path.exists(qna_path) or not os.path.exists(rubric_path):
+            print("No QnA or Rubric files found")
+            sys.exit(0)
+
         sem = asyncio.Semaphore(max_concurrency)
         prs_to_run = await filter_and_clean_prs(merged_prs_path, qna_path, rubric_path)
+        if args.num_to_run == 0:
+            print("No PRs to run")
+            sys.exit(0)
         if args.num_to_run:
             prs_to_run = prs_to_run[:args.num_to_run]
         tasks = [asyncio.create_task(worker(pr, cfg, sem)) for pr in prs_to_run]
     else:
+        if os.path.exists(qna_path) or os.path.exists(rubric_path):
+            print("QnA or Rubric files found, run with --resume to continue")
+            sys.exit(0)
+
         tasks = []
         async with aiofiles.open(merged_prs_path) as f:
             if args.num_to_run:
