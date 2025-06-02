@@ -202,6 +202,11 @@ graph TD
   C --> D[Step 4: Apply Guardrails]
   D --> E[Step 5: Score with Rubric]
   E --> F[Step 6: Write Socratic Feedback]
+  E --> MT[Multi-Turn QnA]
+  F --> MT
+
+  R[Rubric (auto-generated)] --> E
+  R --> F
 
   subgraph Tools Used
     T1[list_changed_files]
