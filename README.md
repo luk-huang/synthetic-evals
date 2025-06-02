@@ -39,43 +39,39 @@ This benchmark evaluates coding agents and their familiarity with specific real-
 ```mermaid
 graph TD
   %% Stage 1: Mining PRs
-  A[Mine Real Merged PRs\n(get_merged_prs.py)] --> A1[merged_prs.jsonl\n(raw PR metadata)]
-  A --> A2[merged_prs_formatted.prs\n(LLM-ready summaries)]
+  A[Mine Real Merged PRs<br><code>get_merged_prs.py</code>] --> A1[Output: <code>merged_prs.jsonl</code>]
+  A --> A2[Output: <code>merged_prs_formatted.prs</code>]
 
-  %% Stage 2: Worktree Snapshot
-  A1 --> B[Create Git Worktree\n(at base_commit)]
+  %% Stage 2: Git Snapshot
+  A1 --> B[Create Git Worktree at <code>base_commit</code>]
   B --> T1[list_files]
   B --> T2[read_file]
   B --> T3[read_diff]
 
-  %% Stage 3: QnA and Rubric Generation
-  A2 --> C[Tool-Augmented Agent\n(Question Generation)]
-  B --> C
-  A2 --> D[Tool-Augmented Agent\n(Answer Generation)]
-  B --> D
-  D --> E[Tool-Augmented Agent\n(Rubric Construction)]
-  B --> E
+  %% Stage 3: Synthetic Generation
+  A2 --> Q[Question Generation Agent]
+  B --> Q
+  A2 --> ANS[Answer Generation Agent]
+  B --> ANS
+  ANS --> R[Rubric Construction Agent]
+  B --> R
 
   %% Stage 4: Evaluation
-  E --> F[Evaluation Pipeline]
+  R --> E[Evaluation Pipeline]
 
   subgraph Stepwise Evaluation
-    F1[Step 1:\nGround Truth\n(get_diff, list_changed_files)]
-    F2[Step 2:\nVerify Answer\n(file_exists, read_file)]
-    F3[Step 3:\nContext Relevance\n(using DeepWiki)]
-    F4[Step 4:\nApply Guardrails]
-    F5[Step 5:\nScore with Rubric]
-    F6[Step 6:\nSocratic Feedback]
-    F1 --> F2 --> F3 --> F4 --> F5 --> F6
+    E1[Step 1: Ground Truth<br><code>get_diff</code>, <code>list_changed_files</code>]
+    E2[Step 2: Verify Answer<br><code>file_exists</code>, <code>read_file</code>]
+    E3[Step 3: Context Check<br><code>deepwiki_ask_question</code>]
+    E4[Step 4: Guardrails]
+    E5[Step 5: Score with Rubric]
+    E6[Step 6: Socratic Feedback]
+    E1 --> E2 --> E3 --> E4 --> E5 --> E6
   end
 
-  %% Multi-Turn
-  F5 --> M[Multi-Turn QnA\n(Revised Answer via Feedback)]
-  F6 --> M
-
-  %% Tool labels
-  classDef tool fill:#f5f5f5,stroke:#888,stroke-width:1px,font-size:10px;
-  class T1,T2,T3 tool
+  %% Multi-Turn QnA
+  E5 --> MT[Multi-Turn QnA<br>Agent Revises Answer]
+  E6 --> MT
 ```
 
 ## Mine Real Merged PRs
