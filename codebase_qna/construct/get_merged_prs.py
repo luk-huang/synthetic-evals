@@ -12,7 +12,6 @@ import json
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 BASE_URL = "https://api.github.com"
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_ALT")
 
 def format_pr_intent(pr_data: Dict) -> str:
     pr_number = pr_data.get("number", "")

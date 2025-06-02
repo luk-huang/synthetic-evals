@@ -3,7 +3,80 @@
 ![Results](figures/eval_results.png)
 ![MultiTurn Results](figures/multiturn_claude3.7.png)
 
-This benchmark evaluates coding agents and their familiarity with specific real-world repositories like `cal.com`, `dify`, and `ladybird` by simulating how well they could perform answer junior engineer level questions.
+This benchmark evaluates coding agents and their familiarity with specific real-world repositories like `cal.com`, `dify`, `vapor`, and `ladybird` by simulating how well they could perform answer junior engineer level questions.
+
+## Setup
+
+1. **Create a virtual environment**
+   *(Python ≥3.9 recommended)*
+
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+   ```
+
+2. **Install dependencies**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Set environment variables**
+
+   Create a `.env` file in the root directory:
+
+   ```bash
+   touch .env
+   ```
+
+   Then add your API keys:
+
+   ```env
+   ANTHROPIC_API_KEY=your_anthropic_key_here
+   GITHUB_TOKEN=your_github_token_here
+   ```
+
+```mermaid
+graph TD
+  %% Stage 1: Mining PRs
+  A[Mine Real Merged PRs\n(get_merged_prs.py)] --> A1[merged_prs.jsonl\n(raw PR metadata)]
+  A --> A2[merged_prs_formatted.prs\n(LLM-ready summaries)]
+
+  %% Stage 2: Worktree Snapshot
+  A1 --> B[Create Git Worktree\n(at base_commit)]
+  B --> T1[list_files]
+  B --> T2[read_file]
+  B --> T3[read_diff]
+
+  %% Stage 3: QnA and Rubric Generation
+  A2 --> C[Tool-Augmented Agent\n(Question Generation)]
+  B --> C
+  A2 --> D[Tool-Augmented Agent\n(Answer Generation)]
+  B --> D
+  D --> E[Tool-Augmented Agent\n(Rubric Construction)]
+  B --> E
+
+  %% Stage 4: Evaluation
+  E --> F[Evaluation Pipeline]
+
+  subgraph Stepwise Evaluation
+    F1[Step 1:\nGround Truth\n(get_diff, list_changed_files)]
+    F2[Step 2:\nVerify Answer\n(file_exists, read_file)]
+    F3[Step 3:\nContext Relevance\n(using DeepWiki)]
+    F4[Step 4:\nApply Guardrails]
+    F5[Step 5:\nScore with Rubric]
+    F6[Step 6:\nSocratic Feedback]
+    F1 --> F2 --> F3 --> F4 --> F5 --> F6
+  end
+
+  %% Multi-Turn
+  F5 --> M[Multi-Turn QnA\n(Revised Answer via Feedback)]
+  F6 --> M
+
+  %% Tool labels
+  classDef tool fill:#f5f5f5,stroke:#888,stroke-width:1px,font-size:10px;
+  class T1,T2,T3 tool
+```
 
 ## Mine Real Merged PRs
 
@@ -24,7 +97,7 @@ This command produces:
 
 These summaries are used downstream to generate questions, answers, and rubrics grounded in real development history.
 
-## 🔍 Synthetic Benchmark Creation Flow
+## Synthetic Benchmark Creation Flow
 
 To evaluate coding agents on real-world tasks, each PR is turned into a synthetic Q\&A instance with three components:
 
@@ -53,7 +126,7 @@ A rubric is then auto-generated from the ideal answer and diff. It defines speci
 
 To simulate realistic developer workflows, each stage—**question generation**, **answer generation**, and **rubric construction**—is powered by a tool-augmented agent operating on a snapshot of the codebase.
 
-### 🛠 Tools & Context Available to the Agent
+### Tools & Context Available to the Agent
 
 For every merged PR, the agent is granted access to the original historical context via a **temporary git worktree**:
 
