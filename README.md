@@ -1,9 +1,21 @@
 # Customize Agentic QnA Evals for any Codebase
 
+Synthetic-Evals benchmarks coding agents on real-world codebases like cal.com, dify, vapor, and ladybird by simulating junior engineer–level questions from real merged PRs.
+
+It auto-generates:
+
+- Questions (from PR summaries)
+- Ideal answers & rubrics (from the actual diffs)
+- Evaluations using tool-augmented agents
+
+Supports:
+
+- Single-turn Q&A scoring (w/ rubric + Socratic feedback)
+- Multi-turn refinement (agent revises based on feedback)
+- Grounded reasoning using snapshot git worktrees + file tools
+
 ![Results](figures/eval_results.png)
 ![MultiTurn Results](figures/multiturn_claude3.7.png)
-
-This benchmark evaluates coding agents and their familiarity with specific real-world repositories like `cal.com`, `dify`, `vapor`, and `ladybird` by simulating how well they could perform answer junior engineer level questions.
 
 ## Setup
 
